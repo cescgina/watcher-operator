@@ -46,6 +46,13 @@ type WatcherAPISpec struct {
 	// Override, provides the ability to override the generated manifest of
 	// several child resources.
 	Override APIOverrideSpec `json:"override,omitempty"`
+
+	// +kubebuilder:validation:Enum=Ingress;PodLevel;None
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=PodLevel
+	// TLSLevel choose until what level should use TLS (terminate at the route,
+	// at the pod or no TLS at all)
+	TLSLevel string `json:"tlsLevel"`
 }
 
 // WatcherAPIStatus defines the observed state of WatcherAPI
@@ -72,9 +79,7 @@ type APIOverrideSpec struct {
 	// Override configuration for the Service created to serve traffic to
 	// the cluster.
 	// The key must be the endpoint type (public, internal)
-	// temporarily use MetalLBConfig struct, later we'll switch to
-	// service.RoutedOverrideSpec
-	Service map[service.Endpoint]MetalLBConfig `json:"service,omitempty"`
+	Service map[service.Endpoint]service.RoutedOverrideSpec `json:"service,omitempty"`
 }
 
 // WatcherAPITemplate defines the input parameters specified by the user to
@@ -86,6 +91,13 @@ type WatcherAPITemplate struct {
 	// Override, provides the ability to override the generated manifest of
 	// several child resources.
 	Override APIOverrideSpec `json:"override,omitempty"`
+
+	// +kubebuilder:validation:Enum=Ingress;PodLevel;None
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=PodLevel
+	// TLSLevel choose until what level should use TLS (terminate at the route,
+	// at the pod or no TLS at all)
+	TLSLevel string `json:"tlsLevel"`
 }
 
 //+kubebuilder:object:root=true
