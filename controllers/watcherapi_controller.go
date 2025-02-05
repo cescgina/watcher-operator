@@ -32,11 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	certmgrv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/go-logr/logr"
 	memcachedv1 "github.com/openstack-k8s-operators/infra-operator/apis/memcached/v1beta1"
 	keystonev1 "github.com/openstack-k8s-operators/keystone-operator/api/v1beta1"
-	"github.com/openstack-k8s-operators/lib-common/modules/certmanager"
 	"github.com/openstack-k8s-operators/lib-common/modules/common"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/endpoint"
@@ -61,7 +59,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8s_corev1 "k8s.io/api/core/v1"
 	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -243,28 +240,6 @@ func (ed *EndpointDetail) CreateRoute(
 			}
 		}
 
-		if ed.Route.TLS.SecretName == nil && !hasCertInOverrideSpec(ed.Route.OverrideSpec) {
-			certRequest := certmanager.CertificateRequest{
-				IssuerName:  ed.Route.TLS.IssuerName,
-				CertName:    ed.Route.TLS.CertName,
-				Hostnames:   []string{*ed.Hostname},
-				Ips:         nil,
-				Annotations: ed.Annotations,
-				Labels:      util.MergeMaps(ed.Labels, map[string]string{serviceCertSelector: ""}),
-				Usages:      nil,
-			}
-
-			// create the cert using the default issue for the endpointSpec
-			certSecret, ctrlResult, err = certmanager.EnsureCert(
-				ctx,
-				helper,
-				certRequest,
-				nil,
-			)
-			if (err != nil) || (ctrlResult != ctrl.Result{}) {
-				return ctrlResult, err
-			}
-		}
 		// create default TLS route override
 		tlsConfig := &routev1.TLSConfig{
 			Termination:                   routev1.TLSTerminationEdge,
@@ -308,22 +283,6 @@ func (ed *EndpointDetail) CreateRoute(
 		if (err != nil) || (ctrlResult != ctrl.Result{}) {
 			return ctrlResult, err
 		}
-		// Delete the issued certificate if it exists and custom cert secret or direct TLS data was provided
-		if ed.Route.TLS.SecretName != nil || hasCertInOverrideSpec(ed.Route.OverrideSpec) {
-			cert := certmanager.NewCertificate(
-				&certmgrv1.Certificate{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      ed.Route.TLS.CertName,
-						Namespace: ed.Namespace,
-					},
-				},
-				5*time.Second,
-			)
-			err := cert.Delete(ctx, helper)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-		}
 		ed.Proto = service.ProtocolHTTPS
 	} else {
 		ed.Proto = service.ProtocolHTTP
@@ -345,20 +304,6 @@ func hasCertInOverrideSpec(overrideSpec route.OverrideSpec) bool {
 		overrideSpec.Spec.TLS.Certificate != "" &&
 		overrideSpec.Spec.TLS.Key != ""
 }
-
-const (
-	// serviceCertSelector selector passed to cert-manager to set on the
-	// service cert secret
-	serviceCertSelector = "service-cert"
-
-	// publicIssuerName name of the default public issuer name used in
-	// openstack-operator
-	publicIssuerName = "rootca-public"
-
-	// internalIssuerName name of the default internal issuer name used in
-	// openstack-operator
-	internalIssuerName = "rootca-public"
-)
 
 // end of helper types to expose services
 
@@ -546,7 +491,7 @@ func (r *WatcherAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	instance.Status.Conditions.MarkTrue(condition.ServiceConfigReadyCondition, condition.ServiceConfigReadyMessage)
 
 	result, err = r.ensureDeployment(ctx, helper, instance, prometheusSecret, inputHash)
-	if err != nil {
+	if (err != nil || result != ctrl.Result{}) {
 		return result, err
 	}
 
@@ -952,27 +897,29 @@ func (r *WatcherAPIReconciler) exposeEndpoints(
 		}
 
 		ed.Service.OverrideSpec = instance.Spec.Override.Service[ed.Type]
-		if instance.Spec.TLSLevel == "PodLevel" {
-			ed.Service.TLS.Enabled = true
-			ed.Service.TLS.CertName = fmt.Sprintf("%s-svc", ed.Name)
-		} else {
-			ed.Service.TLS.Enabled = false
-		}
 
 		if ed.Type == service.EndpointPublic {
+
+			// check if we have a secretName for the public endpoint
+			// defined
+			hasPublicServiceSecretName := instance.Spec.TLS.API.Public.SecretName != nil &&
+				*instance.Spec.TLS.API.Public.SecretName != ""
+
+			// if the user has passed a secretName, we want to use TLS on the
+			// pod level
+			if hasPublicServiceSecretName {
+				ed.Service.TLS.Enabled = true
+				ed.Service.TLS.CertName = fmt.Sprintf("%s-svc", ed.Name)
+			} else {
+				ed.Service.TLS.Enabled = false
+			}
 			// If the service has the create ingress annotation and its
 			// a default ClusterIP service -> create route
 			ed.Route.Create = svc.ObjectMeta.Annotations[service.AnnotationIngressCreateKey] == "true" &&
 				svc.Spec.Type == k8s_corev1.ServiceTypeClusterIP
 
-			// check if we have a secretName for the public endpoint
-			// defined
-			hasPublicSecretName := instance.Spec.TLS.API.Public.SecretName != nil &&
-				*instance.Spec.TLS.API.Public.SecretName != ""
-
-			// we have TLS termination at the ingress if any of PodLevel or
-			// Ingress tlslevels are selected
-			if instance.Spec.TLSLevel != "None" {
+			hasPublicRouteSecretName := instance.Spec.APIOverride.TLS != nil && instance.Spec.APIOverride.TLS.SecretName != ""
+			if hasPublicRouteSecretName {
 				// TLS for route enabled if public endpoint TLS is true
 				ed.Route.TLS.Enabled = true
 				ed.Route.TLS.CertName = fmt.Sprintf("%s-route", ed.Name)
@@ -980,82 +927,26 @@ func (r *WatcherAPIReconciler) exposeEndpoints(
 				// if a custom cert secret was provided we'll use this for
 				// the route, otherwise the issuer is used to request one
 				// for the endpoint
-				if hasPublicSecretName {
-					ed.Route.TLS.SecretName = instance.Spec.TLS.API.Public.SecretName
-					validateSecret := &tls.GenericService{SecretName: ed.Route.TLS.SecretName}
-					_, err := validateSecret.ValidateCertSecret(ctx, helper, instance.GetNamespace())
-					if err != nil {
-						if k8s_errors.IsNotFound(err) {
-							return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
-						}
-						return ctrl.Result{}, err
+				ed.Route.TLS.SecretName = &instance.Spec.APIOverride.TLS.SecretName
+				validateSecret := &tls.GenericService{SecretName: ed.Route.TLS.SecretName}
+				_, err := validateSecret.ValidateCertSecret(ctx, helper, instance.GetNamespace())
+				if err != nil {
+					if k8s_errors.IsNotFound(err) {
+						return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
 					}
-				} else {
-					// we don't support custom cert issuers for now, just rely
-					// on the default ones from the openstack-operator
-					ed.Route.TLS.IssuerName = publicIssuerName
+					return ctrl.Result{}, err
 				}
-
 			}
 
 			if ed.Service.TLS.Enabled {
 				ed.Service.TLS.CaBundleSecretName = tls.CABundleSecret
-				// if a custom cert secret was provided and ed.Route.Create == false
-				// we'll use this for the service. This is for
-				// use case where you deploy without ingress/routes and also use
-				// a LoadBalancer (MetalLB) for the public endpoints.
-				if !ed.Route.Create && hasPublicSecretName {
-					ed.Service.TLS.SecretName = instance.Spec.TLS.API.Public.SecretName
-					_, err := ed.Service.TLS.GenericService.ValidateCertSecret(ctx, helper, instance.Namespace)
-					if err != nil {
-						if k8s_errors.IsNotFound(err) {
-							return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
-						}
-						return ctrl.Result{}, err
+				ed.Service.TLS.SecretName = instance.Spec.TLS.API.Public.SecretName
+				_, err := ed.Service.TLS.GenericService.ValidateCertSecret(ctx, helper, instance.Namespace)
+				if err != nil {
+					if k8s_errors.IsNotFound(err) {
+						return ctrl.Result{RequeueAfter: time.Duration(10) * time.Second}, nil
 					}
-					// Delete the issued certificate if it exists
-					cert := certmanager.NewCertificate(
-						&certmgrv1.Certificate{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      ed.Route.TLS.CertName,
-								Namespace: ed.Namespace,
-							},
-						},
-						5*time.Second,
-					)
-					err = cert.Delete(ctx, helper)
-					if err != nil {
-						return ctrl.Result{}, err
-					}
-				} else {
-					// issue a certificate for public pod virthost
-					certRequest := certmanager.CertificateRequest{
-						IssuerName: publicIssuerName,
-						CertName:   ed.Service.TLS.CertName,
-						Hostnames: []string{
-							fmt.Sprintf("%s.%s.svc", ed.Name, instance.Namespace),
-						},
-						Ips:         nil,
-						Annotations: ed.Annotations,
-						Labels:      util.MergeMaps(ed.Labels, map[string]string{serviceCertSelector: ""}),
-						Usages:      nil,
-					}
-
-					addSubjNames := util.GetStringListFromMap(svc.Annotations, tls.AdditionalSubjectNamesKey)
-					if len(addSubjNames) > 0 {
-						certRequest.Hostnames = append(certRequest.Hostnames, addSubjNames...)
-					}
-
-					certSecret, ctrlResult, err := certmanager.EnsureCert(
-						ctx,
-						helper,
-						certRequest,
-						nil,
-					)
-					if (err != nil) || (ctrlResult != ctrl.Result{}) {
-						return ctrlResult, err
-					}
-					ed.Service.TLS.SecretName = &certSecret.Name
+					return ctrl.Result{}, err
 				}
 			}
 
@@ -1064,54 +955,29 @@ func (r *WatcherAPIReconciler) exposeEndpoints(
 				return ctrlResult, err
 			}
 		} else if ed.Type == service.EndpointInternal {
-			if ed.Service.TLS.Enabled {
-
-				ed.Service.TLS.CaBundleSecretName = tls.CABundleSecret
-				// create certificate for internal pod virthost
-				// request certificate
-				certRequest := certmanager.CertificateRequest{
-					IssuerName: internalIssuerName,
-					CertName:   ed.Service.TLS.CertName,
-					Hostnames: []string{
-						fmt.Sprintf("%s.%s.svc", ed.Name, instance.Namespace),
-					},
-					Ips:         nil,
-					Annotations: ed.Annotations,
-					Labels:      util.MergeMaps(ed.Labels, map[string]string{serviceCertSelector: ""}),
-					Usages:      nil,
-				}
-
-				addSubjNames := util.GetStringListFromMap(svc.Annotations, tls.AdditionalSubjectNamesKey)
-				if len(addSubjNames) > 0 {
-					certRequest.Hostnames = append(certRequest.Hostnames, addSubjNames...)
-				}
-
-				certSecret, ctrlResult, err := certmanager.EnsureCert(
-					ctx,
-					helper,
-					certRequest,
-					nil,
-				)
-				if (err != nil) || (ctrlResult != ctrl.Result{}) {
-					return ctrlResult, err
-				}
-				ed.Service.TLS.SecretName = &certSecret.Name
+			// check if we have a secretName for the public endpoint
+			// defined
+			hasInternalServiceSecretName := instance.Spec.TLS.API.Internal.SecretName != nil &&
+				*instance.Spec.TLS.API.Internal.SecretName != ""
+			// if the user has passed a secretName, we want to use TLS on the
+			// pod level
+			if hasInternalServiceSecretName {
+				ed.Service.TLS.Enabled = true
+				ed.Service.TLS.CertName = fmt.Sprintf("%s-svc", ed.Name)
+				ed.Service.TLS.SecretName = instance.Spec.TLS.API.Internal.SecretName
+			} else {
+				ed.Service.TLS.Enabled = false
 			}
 		}
 
 		// update override for the service with the endpoint url
 		if ed.EndpointURL != "" {
 			ed.Service.OverrideSpec.EndpointURL = &ed.EndpointURL
-			apiEndpoints[string(ed.Type)] = ed.EndpointURL
+			apiEndpoints[ed.Type.String()] = ed.EndpointURL
 		}
 
 		endpointDetails.EndpointDetails[ed.Type] = ed
 	}
-	// set service overrides
-	instance.Spec.Override.Service = endpointDetails.GetEndpointServiceOverrides()
-	// set NovaAPI TLS cert secret
-	instance.Spec.TLS.API.Public.SecretName = endpointDetails.GetEndptCertSecret(service.EndpointPublic)
-	instance.Spec.TLS.API.Internal.SecretName = endpointDetails.GetEndptCertSecret(service.EndpointInternal)
 
 	return ctrl.Result{}, nil
 }

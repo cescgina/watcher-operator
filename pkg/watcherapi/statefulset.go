@@ -60,6 +60,12 @@ func StatefulSet(
 	readinessProbe.HTTPGet = livenessProbe.HTTPGet
 	startupProbe.HTTPGet = livenessProbe.HTTPGet
 
+	if instance.Spec.TLS.API.Enabled(service.EndpointPublic) {
+		livenessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+		readinessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+		startupProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+	}
+
 	apiVolumes := append(watcher.GetLogVolume(),
 		corev1.Volume{
 			Name: "config-data-custom",

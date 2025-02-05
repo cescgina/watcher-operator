@@ -47,12 +47,11 @@ type WatcherAPISpec struct {
 	// several child resources.
 	Override APIOverrideSpec `json:"override,omitempty"`
 
-	// +kubebuilder:validation:Enum=Ingress;PodLevel;None
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=PodLevel
-	// TLSLevel choose until what level should use TLS (terminate at the route,
-	// at the pod or no TLS at all)
-	TLSLevel string `json:"tlsLevel"`
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	// APIOverride, provides the ability to override the generated
+	// manifest of several child resources.
+	APIOverride Override `json:"apiOverride,omitempty"`
 }
 
 // WatcherAPIStatus defines the observed state of WatcherAPI
@@ -91,13 +90,6 @@ type WatcherAPITemplate struct {
 	// Override, provides the ability to override the generated manifest of
 	// several child resources.
 	Override APIOverrideSpec `json:"override,omitempty"`
-
-	// +kubebuilder:validation:Enum=Ingress;PodLevel;None
-	// +kubebuilder:validation:Optional
-	// +kubebuilder:default=PodLevel
-	// TLSLevel choose until what level should use TLS (terminate at the route,
-	// at the pod or no TLS at all)
-	TLSLevel string `json:"tlsLevel"`
 }
 
 //+kubebuilder:object:root=true

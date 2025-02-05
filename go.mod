@@ -10,7 +10,6 @@ require (
 	github.com/openshift/api v3.9.0+incompatible
 	github.com/openstack-k8s-operators/infra-operator/apis v0.5.0
 	github.com/openstack-k8s-operators/keystone-operator/api v0.5.1-0.20241023160107-bd8e671350e1
-	github.com/openstack-k8s-operators/lib-common/modules/certmanager v0.5.0
 	github.com/openstack-k8s-operators/lib-common/modules/common v0.5.1-0.20241029151503-4878b3fa3333
 	github.com/openstack-k8s-operators/lib-common/modules/test v0.5.1-0.20241029151503-4878b3fa3333
 	github.com/openstack-k8s-operators/mariadb-operator/api v0.5.0
